@@ -1,6 +1,6 @@
 # 🛡️ ROP & Binary Exploitation Cheat Sheet
 
-A quick-reference guide and cheat sheet for binary analysis, ROP gadget hunting, stack pivoting, payload optimization, and `ret2_dlresolve` exploitation.
+A quick-reference guide and cheat sheet for binary analysis, ROP gadget hunting, stack pivoting, payload optimization, `ret2_dlresolve`, and `ret2csu` exploitation.
 
 ---
 
@@ -11,6 +11,7 @@ A quick-reference guide and cheat sheet for binary analysis, ROP gadget hunting,
 - [3. Debugging & Pattern Generation](#3-debugging--pattern-generation)
 - [4. Payload Engineering & Optimization](#4-payload-engineering--optimization)
 - [5. Deep Dive: `ret2_dlresolve`](#5-deep-dive-ret2_dlresolve)
+- [6. Deep Dive: `ret2csu`](#6-deep-dive-ret2csu)
 
 ---
 
@@ -20,6 +21,7 @@ A quick-reference guide and cheat sheet for binary analysis, ROP gadget hunting,
 | :--- | :--- | :--- |
 | **Search gadgets** | `ROPgadget --binary ./pivot32 \| grep -E "syscall"` | Search for syscall or specific instructions across the binary |
 | **Deeper gadget depth** | `ROPgadget --binary ./fluff32 --depth 20 \| grep -E "pext"` | Increase instruction search depth to find complex gadgets |
+| **Find ret2csu gadgets** | `objdump -d -M intel pivot \| sed -n '/<__libc_csu_init>:/,/^$/p'` | Disassemble `__libc_csu_init` to extract universal CSU gadgets |
 
 > [!TIP]
 > Use `--depth <N>` when common single/double-instruction gadgets aren't available. This searches up to `N` instructions prior to the `ret` opcode.
@@ -72,11 +74,14 @@ cyclic -l 0x6262626e6262626d -a "bcdefhijklmnopqrstuvwyz"
 ### GDB Memory Inspection
 
 ```gdb
-# Examine 4 words (4-byte units) in hexadecimal format at target address
+# Examine 4 words (4-byte / 32-bit units) in hexadecimal format at target address
 x/4xw 0x0804A03C
+
+# Examine 4 giant words (8-byte / 64-bit units) in hexadecimal format
+x/4xg 0x0804A03C
 ```
 
-Format breakdown: `x/[count][format][size]` (`4` units, `x` = hex, `w` = word / 4 bytes).
+Format breakdown: `x/[count][format][size]` (e.g., `4` units, `x` = hex, `w` = word / 4 bytes, `g` = giant word / 8 bytes / 64-bit).
 
 ---
 
@@ -125,10 +130,10 @@ If the initial stack buffer is too small to fit the full ROP chain:
 >    - Fake `Elf32_Rel` and `Elf32_Sym` addresses must align properly.
 >    - The offset `(fake_reloc - JMPREL)` must be cleanly divisible by `sizeof(Elf32_Rel)` (8 bytes).
 >    - The offset `(fake_sym - SYMTAB)` must be cleanly divisible by `sizeof(Elf32_Sym)` (16 bytes).
-> 2. **`r_info` Calculation**:
->    - Set `r_info = (sym_index << 8) | 0x7`.
+> 2. **`r_info` Calculation (Most Critical)**:
+>    - `r_info` is the most critical component of the forged structure.
+>    - Set `r_info = (sym_index << 8) | 0x7` to skip assertions and ensure the correct symbol index is retrieved when `_dl_runtime_resolve` executes `r_info >> 8`.
 >    - The `0x7` corresponds to relocation type `R_386_JUMP_SLOT`.
->    - When `_dl_runtime_resolve` executes `r_info >> 8`, it extracts the exact `sym_index`.
 > 3. **Hash Table & Boundary Avoidance**:
 >    - Adjust your base address in `.bss` so `r_info.hash` lands on a zeroed/valid memory page to bypass version checks and assertion failures.
 
@@ -145,3 +150,29 @@ If the initial stack buffer is too small to fit the full ROP chain:
 |  Argument 1 (Pointer to "/bin/sh") |  <-- Argument passed to resolved function
 +------------------------------------+
 ```
+
+---
+
+## 6. Deep Dive: `ret2csu`
+
+`ret2csu` leverages universal gadgets found in the `__libc_csu_init` function (present in dynamically linked 64-bit x86-64 ELF binaries) to control registers like `rdx`, `rsi`, and `rdi`, and invoke arbitrary function pointers.
+
+### Extracting CSU Gadgets
+
+```bash
+# Dump __libc_csu_init disassembly to locate csu gadgets
+objdump -d -M intel pivot | sed -n '/<__libc_csu_init>:/,/^$/p'
+```
+
+### Call Target & Double Dereferencing
+
+> [!IMPORTANT]
+> The register used in the CSU call instruction performs **double dereferencing**:
+> - For example: `call QWORD PTR [r12+rbx*8]`
+> - Set `rbx = 0x00` so the call targets `[r12]`.
+> - **Crucial**: `r12` must be an **address holding another address** pointing to instructions (a pointer to a pointer).
+
+### Safe Call Targets & Library Execution
+
+- **Harmless Instructions**: A great place for harmless instructions is `.fini_array`, as it holds addresses pointing to harmless destructor functions.
+- **Executing Shared Library Functions**: Pass `elf.got["function_name"]` as the target (e.g., in `r12`), because GOT entries hold pointers to function instructions.
