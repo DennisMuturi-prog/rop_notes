@@ -1,0 +1,56 @@
+#search for rop gadgets
+ROPgadget --binary ./pivot32 | grep -E "syscall"
+#view segments
+rabin2 -S write432
+#without bad chars cyclic patttern
+pwndbg> cyclic 500 -a "bcdefhijklmnopqrstuvwyz"
+cyclic -l 0x6262626e6262626d -a "bcdefhijklmnopqrstuvwyz"
+#search for deeper rop gadgets
+ROPgadget --binary ./fluff32 --depth 20  | grep -E "pext"
+#checking sections of data
+objdump -s -j .rodata fluff
+#disassemble a binary to see all gadgets under the disassembly of functions
+objdump -d vuln
+
+#search for useful strings
+strings -t x vuln | grep bin
+-t x: Tells strings to print the offset (position in bytes from the start of the file) before each string, formatted in hexadecimal (x).
+
+#show all plt sections
+objdump -d vuln -j .plt -M intel
+#print 4 words
+x/4xw 0x0804A03C
+
+#print 4 64bit(g)
+x/4xg 0x0804A03C
+
+#find ret2csu gadgets
+objdump -d -M intel pivot | sed -n '/<__libc_csu_init>:/,/^$/p'
+
+
+notes
+payload may be larger than the stack region or the read amount of bytes specified
+minimize payload
+reuse values already in register and change other register values accordingly
+
+the read size parameter may be small so avoid p.sendline and use p.send as an extra byte is sent
+
+if buffer size is not enough ,you could change the stack pointer to move to the heap area you control and put payload there,you need a sequence of gadgets to do that transition.
+prefer returning to main if the function you are in receives arguments from its caller 
+
+#notes about ret2_dlresolve
+
+you can shift your starting point in bss so that r_info.hash lands in an area that has a zero and is in valid memory.
+make sure the fake rel and dynsym structures addresses are aligned so that the differences between fake and real is divisible by size
+r_info should <<8 | 0x7 in order to skip the assertion and to get correct when >> 8 happens to them
+r_info is the most critical.
+reloc_arg should be placed below default-stub address,then return address of sytem and then the arguments of system.
+to call functions in a row you can clean the other functions arguments with pop_n_ret and then set up your next function.
+you can use the read to write data to sections of the running binary.
+
+#ret2csu
+for the register that is used for the call,it should be an address holding another address because there is double deferencing.
+for example:call   QWORD PTR [r12+rbx*8] set rbx to 0x00 and ensure r12 is an address holding another address to instructions.
+a great place for harmless instructions is .fini_array as it holds addressses to harmless instructions.
+if you want to execute a shared library function you can pass elf.got["function_name"] as got holds addresses to the instructions
+
